@@ -17,6 +17,12 @@ namespace LoLMapGeoConverter {
                                                              };
         private static readonly string[] knownEmissiveColorNames = { "Emissive_Color", "Color_01" };
 
+        private static readonly float[] identityMatrix = { 1, 0, 0, 0,
+                                                           0, 1, 0, 0,
+                                                           0, 0, 1, 0,
+                                                           0, 0, 0, 1
+                                                         };
+
 
         private FileWrapper mapgeoFile;
         private FileWrapper binFile;
@@ -80,6 +86,7 @@ namespace LoLMapGeoConverter {
             Console.WriteLine("\nlast read location:  " + mapgeoFile.GetFilePosition());
             Console.WriteLine("missed bytes:  " + (mapgeoFile.GetLength() - mapgeoFile.GetFilePosition()));
             Console.WriteLine();
+            Program.Pause();
 
             mapgeoFile.Close();
 
@@ -244,19 +251,61 @@ namespace LoLMapGeoConverter {
                     mapgeoFile.ReadByte();  // necessary to fix version 5/6 differences, signifcance unknown, only known difference between versions
                 }
 
-                for(int j = 0; j < 24; j++) {  // 6 floats
-                    mapgeoFile.ReadByte();
+                for(int j = 0; j < 6; j++) {  // appears to be an AABB
+                    mapgeoFile.ReadFloat();
                 }
 
+
                 // here is the identity matrix section
-                for(int j = 0; j < 64; j++) {  // 16 floats
+
+                /*for(int j = 0; j < 64; j++) {  // 16 floats
                     mapgeoFile.ReadByte();
+                }*/
+
+                float[] matrix = new float[16];
+                for(int j = 0; j < matrix.Length; j++) {
+                    matrix[j] = mapgeoFile.ReadFloat();
                 }
+
+                for(int j = 0; j < matrix.Length; j++) {
+                    if(matrix[j] != MapGeoFileReader.identityMatrix[j]) {
+                        Console.WriteLine("non-identity matrix at " + mapgeoFile.GetFilePosition() + ":  ");
+
+                        for(int k = 0; k < 4; k++) {
+                            Console.Write(" ");
+                            for(int m = 0; m < 4; m++) {
+                                Console.Write(" " + matrix[k * 4 + m]);
+                            }
+                            Console.WriteLine();
+                        }
+                        Console.WriteLine();
+                        Program.Pause();
+
+                        break;
+                    }
+                }
+
 
                 mapgeoFile.ReadByte();
 
-                for(int j = 0; j < 108; j++) {  // 27 floats
-                    mapgeoFile.ReadByte();
+
+                // 27 floats, all really small values, first six appear to be UV range but the rest are really small
+                // 
+                // sets of threes also seem to have similar value ranges, however this is likely just coincidence
+                // 
+                // sample taken from the Project map's 0th object:
+                //   0.4532 0.5010 0.6329
+                //   0.3848 0.4264 0.5898
+                //   0.009715 0.01165 0.01663
+                //   -0.004104 -0.004169 -0.004142
+                //   -0.005723 -0.005705 -0.005619
+                //   0.1282 0.01433 0.02365
+                //   -0.1397 -0.1536 -0.2135
+                //   -0.0001638 -0.0003975 -0.0002642
+                //   -0.2823 -0.3129 -0.4322
+
+                for(int j = 0; j < 27; j++) {
+                    mapgeoFile.ReadFloat();
                 }
 
 
@@ -428,17 +477,22 @@ namespace LoLMapGeoConverter {
                 if(stringSplit != "") {
                     int samplerNameStartIndex = -1;
                     for(int i = 0; i < MapGeoFileReader.knownSamplerNames.Length; i++) {
-                        samplerNameStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownSamplerNames[i]);
+                        string samplerName = MapGeoFileReader.knownSamplerNames[i];
+                        //string searchString = "\x4c\x4f\xe7\x02\x10" + (char) (samplerName.Length % 256) + (char) (samplerName.Length / 256) + samplerName;
+
+                        //samplerNameStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownSamplerNames[i]);
+                        //samplerNameStartIndex = stringSplit.IndexOf(searchString);
+                        samplerNameStartIndex = stringSplit.IndexOf(samplerName);
 
                         if(samplerNameStartIndex >= 0) {
                             // found a sampler, so just use its texture
 
-                            if(MapGeoFileReader.knownSamplerNames[i] == "FlipBook_Texture") {
+                            if(samplerName == "FlipBook_Texture") {
                                 Console.WriteLine("\n\n  \"FlipBook_Texture\" is in use for material \"" + material.materialName + "\"");
                                 Program.Pause();
                             }
 
-                            if(MapGeoFileReader.knownSamplerNames[i] == "GlowTexture") {
+                            if(samplerName == "GlowTexture") {
                                 Console.WriteLine("\n\n  \"GlowTexture\" is in use for material \"" + material.materialName + "\"");
                                 Program.Pause();
                             }
@@ -453,8 +507,9 @@ namespace LoLMapGeoConverter {
                         Console.WriteLine("\n\n  couldn't find sampler keys for material \"" + material.materialName + "\" (will try to find emissive colors)");
                         Program.Pause();
                     } else {
-                        int startIndex = stringSplit.IndexOf("ASSETS/", samplerNameStartIndex);
-                        int endIndex = stringSplit.IndexOf(".dds", startIndex) + 3;  // adding `+3` for the length of "dds" itself ('.' is already accounted)
+                        string stringSplitLower = stringSplit.ToLower();  // want to preserve texture path case for readability
+                        int startIndex = stringSplitLower.IndexOf("assets/", samplerNameStartIndex);
+                        int endIndex = stringSplitLower.IndexOf(".dds", startIndex) + 3;  // adding `+3` for the length of "dds" itself ('.' is already accounted)
                         int count = endIndex - startIndex + 1;
 
                         material.textureName = stringSplit.Substring(startIndex, count);
@@ -465,7 +520,13 @@ namespace LoLMapGeoConverter {
                     int emissiveColorStartIndex = -1;
                     string emissiveColorName = "";
                     for(int i = 0; i < MapGeoFileReader.knownEmissiveColorNames.Length; i++) {
+                        string colorName = MapGeoFileReader.knownEmissiveColorNames[i];
+                        //string searchString = "\x4c\x4f\xe7\x02\x10" + (char) (colorName.Length % 256) + (char) (colorName.Length / 256) + colorName;
+
+                        //emissiveColorStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownEmissiveColorNames[i]);
+                        //emissiveColorStartIndex = stringSplit.IndexOf(searchString);
                         emissiveColorStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownEmissiveColorNames[i]);
+
 
                         if(emissiveColorStartIndex >= 0) {
                             // found an emissive color, so use this
@@ -679,7 +740,6 @@ namespace LoLMapGeoConverter {
                         objFile.WriteLine("g " + objectName);
 
                         string materialName = objectName + "SG";  // need to save this for later
-                        MapGeoMaterial material = materialTextureMap[submesh.materialName];
                         if(mtlFile != null) {
                             objFile.WriteLine("usemtl " + materialName);
                         }
@@ -728,6 +788,9 @@ namespace LoLMapGeoConverter {
 
                         // now we need to add the material that we referenced earlier in the .obj file to the accompanying .mtl file
                         if(mtlFile != null) {
+                            MapGeoMaterial material = materialTextureMap[submesh.materialName];
+
+
                             mtlFile.WriteBlankLines(4);
 
                             mtlFile.WriteLine("newmtl " + materialName);
