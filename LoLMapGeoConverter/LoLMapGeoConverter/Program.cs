@@ -86,7 +86,7 @@ namespace LoLMapGeoConverter {
             }
 
 
-            int version = mapgeoFile.ReadByte();
+            int version = mapgeoFile.ReadInt();  // moon said this was an int
             Console.WriteLine("\nversion = " + version);
 
 

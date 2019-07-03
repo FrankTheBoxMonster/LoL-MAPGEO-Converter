@@ -12,6 +12,7 @@ namespace LoLMapGeoConverter {
                                                                "Bottom_Texture",
                                                                "FlipBook_Texture",
                                                                "GlowTexture",
+                                                               "Glow_Texture",
                                                                "Mask_Textures",
                                                                "Mask_Texture"  // "Diffuse_Texture" should come before this one
                                                              };
@@ -43,7 +44,7 @@ namespace LoLMapGeoConverter {
             this.version = version;
 
 
-            int unknownHeaderBytes = mapgeoFile.ReadInt();  // always zero?
+            int unknownHeaderBytes = mapgeoFile.ReadByte();  // moon said this was a bool that toggles on a global `SEPARATE_POINT_LIGHTS` property
 
             if(unknownHeaderBytes != 0) {
                 Console.WriteLine("\nunknown header bytes are non-zero:  " + unknownHeaderBytes);
@@ -55,6 +56,8 @@ namespace LoLMapGeoConverter {
 
             for(int i = 0; i < unknownBlockCount; i++) {
                 // values appear ot be mostly either 0x00, 0x02, or 0x03, but there's also some 0x01, 0x04, 0x07, 0x0e (unknown significance)
+                // 
+                // apparently this is called `VertexElemGroup` by Riot
                 for(int j = 0; j < 128; j++) {
                     mapgeoFile.ReadByte();  // these appear to be 32 ints but we'll just read 128 bytes for now
                 }
@@ -190,7 +193,7 @@ namespace LoLMapGeoConverter {
                 //   - 0x01:  block contains both vertex and UV data
                 //   - 0x02:  block contains only vertex data, with UV data coming from a separate block (this is used for duplicate mesh objects, so that
                 //            they can have separate positions without having separate UV coords, which makes the transformation matrix down below redundant)
-                if(type1 == 0x01 && (type2 == 0x02 || type2 == 0x00 || type2 == 0x05 || type2 == 0x04)) {
+                if(type1 == 0x01 && (type2 == 0x02 || type2 == 0x00 || type2 == 0x05 || type2 == 0x04 || type2 == 0x03)) {
                     objectBlock.uvBlockIndex = objectBlock.vertexBlockIndex;
                 } else if(type1 == 0x02 && (type2 == 0x00 || type2 == 0x01 || type2 == 0x02)) {
                     objectBlock.uvBlockIndex = mapgeoFile.ReadInt();
@@ -203,7 +206,7 @@ namespace LoLMapGeoConverter {
                 int totalTriIndexCount = mapgeoFile.ReadInt();  // total tri count = this value / 3 (again not really important since we only care about submeshes)
                 objectBlock.triBlockIndex = mapgeoFile.ReadInt();
 
-                int submeshCount = mapgeoFile.ReadInt();
+                int submeshCount = mapgeoFile.ReadInt();  // apparently this has a hard limit of 32
 
                 objectBlock.submeshes = new MapGeoSubmesh[submeshCount];
                 for(int j = 0; j < submeshCount; j++) {
@@ -257,15 +260,24 @@ namespace LoLMapGeoConverter {
 
 
                 // here is the identity matrix section
+                // 
+                // note:  the matrix actually reads in column-major order, so the 5th element read is actually in
+                // the 2nd column 1st row rather than the 1st column 2nd row
+                // 
+                // it also follows the usual "negate X" rule
 
                 /*for(int j = 0; j < 64; j++) {  // 16 floats
                     mapgeoFile.ReadByte();
                 }*/
 
                 float[] matrix = new float[16];
+                objectBlock.transformationMatrix = matrix;
                 for(int j = 0; j < matrix.Length; j++) {
                     matrix[j] = mapgeoFile.ReadFloat();
                 }
+
+
+                // just going to keep this warning here for now
 
                 for(int j = 0; j < matrix.Length; j++) {
                     if(matrix[j] != MapGeoFileReader.identityMatrix[j]) {
@@ -274,11 +286,12 @@ namespace LoLMapGeoConverter {
                         for(int k = 0; k < 4; k++) {
                             Console.Write(" ");
                             for(int m = 0; m < 4; m++) {
-                                Console.Write(" " + matrix[k * 4 + m]);
+                                Console.Write(" " + matrix[m * 4 + k]);  // need to print in row-major order despite being stored in column-major order
                             }
                             Console.WriteLine();
                         }
                         Console.WriteLine();
+                        Console.WriteLine("this shouldn't be any issue");
                         Program.Pause();
 
                         break;
@@ -699,9 +712,10 @@ namespace LoLMapGeoConverter {
 
                     for(int j = 0; j < totalVertexCount; j++) {
                         MapGeoVertex vertex = vertexBlock.vertices[j];
+                        float[] transformedVertex = objectBlock.ApplyTransformationMatrix(vertex.position, false);
 
                         // have to negate X-coordinates due to how Maya's coordinate axes work
-                        objFile.WriteLine("v " + (-1 * vertex.position[0]) + " " + vertex.position[1] + " " + vertex.position[2]);
+                        objFile.WriteLine("v " + (-1 * transformedVertex[0]) + " " + transformedVertex[1] + " " + transformedVertex[2]);
                     }
 
                     objFile.WriteBlankLine();
@@ -712,6 +726,13 @@ namespace LoLMapGeoConverter {
 
                         // have to invert the V-coordinate due to how Riot handles their UV coordinates (flipped upside-down about the Y=0.5 axis)
                         objFile.WriteLine("vt " + uv.colorUV[0] + " " + (1f - uv.colorUV[1]));
+
+                        // these are not interchangeable, you'll end up with bad textures if you swap the UV sets
+                        /*if(hasLightmap == false) {
+                            objFile.WriteLine("vt " + uv.colorUV[0] + " " + (1f - uv.colorUV[1]));
+                        } else {
+                            objFile.WriteLine("vt " + uv.lightmapUV[0] + " " + (1f - uv.lightmapUV[1]));
+                        }*/
                     }
 
                     objFile.WriteBlankLine();
@@ -719,9 +740,11 @@ namespace LoLMapGeoConverter {
 
                     for(int j = 0; j < totalVertexCount; j++) {
                         MapGeoVertex vertex = vertexBlock.vertices[j];
+                        float[] transformedNormal = objectBlock.ApplyTransformationMatrix(vertex.normalDirection, true);
+
 
                         // have to negate X-coordinates due to how Maya's coordinate axes work
-                        objFile.WriteLine("vn " + (-1 * vertex.normalDirection[0]) + " " + vertex.normalDirection[1] + " " + vertex.normalDirection[2]);
+                        objFile.WriteLine("vn " + (-1 * transformedNormal[0]) + " " + transformedNormal[1] + " " + transformedNormal[2]);
                     }
 
                     objFile.WriteBlankLine();
