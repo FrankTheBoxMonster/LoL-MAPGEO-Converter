@@ -32,6 +32,9 @@ namespace LoLMapGeoConverter {
 
 
         public float[] ApplyTransformationMatrix(float[] originalPosition, bool isDirection) {
+            // this is the only vector math we really do, so we can get away with not needing a proper Vector3 implementation
+
+
             float[] result = new float[3];
 
             result[0] = (transformationMatrix[0] * originalPosition[0]) + (transformationMatrix[4] * originalPosition[1]) + (transformationMatrix[8] * originalPosition[2]);

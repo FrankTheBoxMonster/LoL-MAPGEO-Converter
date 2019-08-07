@@ -44,12 +44,17 @@ namespace LoLMapGeoConverter {
             this.version = version;
 
 
-            int unknownHeaderBytes = mapgeoFile.ReadByte();  // moon said this was a bool that toggles on a global `SEPARATE_POINT_LIGHTS` property
+            if(version != 7) {
+                int unknownHeaderBytes = mapgeoFile.ReadByte();  // moon said this was a bool that toggles on a global `SEPARATE_POINT_LIGHTS` property
 
-            if(unknownHeaderBytes != 0) {
-                Console.WriteLine("\nunknown header bytes are non-zero:  " + unknownHeaderBytes);
-                Program.Pause();
+                if(unknownHeaderBytes != 0) {
+                    Console.WriteLine("\nunknown header bytes are non-zero:  " + unknownHeaderBytes);
+                    Program.Pause();
+                }
+            } else {
+                // version 7 removed this byte from the header
             }
+
 
 
             int unknownBlockCount = mapgeoFile.ReadInt();
@@ -57,7 +62,7 @@ namespace LoLMapGeoConverter {
             for(int i = 0; i < unknownBlockCount; i++) {
                 // values appear ot be mostly either 0x00, 0x02, or 0x03, but there's also some 0x01, 0x04, 0x07, 0x0e (unknown significance)
                 // 
-                // apparently this is called `VertexElemGroup` by Riot
+                // apparently this is called `VertexElemGroup` by Riot according to moon, still don't know what it's used for though
                 for(int j = 0; j < 128; j++) {
                     mapgeoFile.ReadByte();  // these appear to be 32 ints but we'll just read 128 bytes for now
                 }
@@ -187,7 +192,7 @@ namespace LoLMapGeoConverter {
                 objectBlock.uvBlockIndex = -1;
 
                 // these are likely useful in some other way, pretty sure we just added `type2` values as we found them without
-                // actually trying to correlate them to anything
+                // actually trying to correlate them to anything, since we never actually use `type2` for anything
                 // 
                 // `type1` values is how float data block formats are determined:
                 //   - 0x01:  block contains both vertex and UV data
@@ -206,7 +211,7 @@ namespace LoLMapGeoConverter {
                 int totalTriIndexCount = mapgeoFile.ReadInt();  // total tri count = this value / 3 (again not really important since we only care about submeshes)
                 objectBlock.triBlockIndex = mapgeoFile.ReadInt();
 
-                int submeshCount = mapgeoFile.ReadInt();  // apparently this has a hard limit of 32
+                int submeshCount = mapgeoFile.ReadInt();  // apparently this has a hard limit of 32 according to moon
 
                 objectBlock.submeshes = new MapGeoSubmesh[submeshCount];
                 for(int j = 0; j < submeshCount; j++) {
@@ -249,8 +254,11 @@ namespace LoLMapGeoConverter {
                 // there is also a section of floats that always appears to be { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } },
                 // this pattern obviously appears to be an identity matrix, which might show that the format supports the ability to transform
                 // duplicate objects without needing to use separate vertex blocks like what is done in practice
+                // 
+                // starting with the TFT maps, they started actually using this transformation matrix for a couple objects, so we actually
+                // have to make sure to handle it properly now, but most still use an identity matrix, although this might change moving forward
 
-                if(version == 6) {
+                if(version != 5) {
                     mapgeoFile.ReadByte();  // necessary to fix version 5/6 differences, signifcance unknown, only known difference between versions
                 }
 
@@ -299,7 +307,16 @@ namespace LoLMapGeoConverter {
                 }
 
 
-                mapgeoFile.ReadByte();
+                int unknownByte1 = mapgeoFile.ReadByte();  // no idea
+
+                if(version == 7) {
+                    int unknownByte2 = mapgeoFile.ReadByte();  // again, no idea
+
+                    if(unknownByte1 != 0x1f && unknownByte2 != 0xff) {
+                        Console.WriteLine("non-0x1fff unknown bytes:  " + unknownByte1.ToString("X2") + " " + unknownByte2.ToString("X2"));
+                        Program.Pause();
+                    }
+                }
 
 
                 // 27 floats, all really small values, first six appear to be UV range but the rest are really small
@@ -711,6 +728,9 @@ namespace LoLMapGeoConverter {
                     objFile.WriteBlankLine();
 
                     for(int j = 0; j < totalVertexCount; j++) {
+                        // going to bake the transformation matrix into the .obj vertex data since
+                        // we don't really have any other option in the .obj format
+
                         MapGeoVertex vertex = vertexBlock.vertices[j];
                         float[] transformedVertex = objectBlock.ApplyTransformationMatrix(vertex.position, false);
 
@@ -739,6 +759,8 @@ namespace LoLMapGeoConverter {
 
 
                     for(int j = 0; j < totalVertexCount; j++) {
+                        // also going to apply the transformation matrix to the vertex normal directions
+
                         MapGeoVertex vertex = vertexBlock.vertices[j];
                         float[] transformedNormal = objectBlock.ApplyTransformationMatrix(vertex.normalDirection, true);
 

@@ -90,7 +90,7 @@ namespace LoLMapGeoConverter {
             Console.WriteLine("\nversion = " + version);
 
 
-            if(version != 6 && version != 5) {
+            if(version != 6 && version != 5 && version != 7) {
                 Console.WriteLine("Error:  unrecognized version number:  " + version);
 
                 return;
