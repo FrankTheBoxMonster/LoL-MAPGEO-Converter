@@ -26,6 +26,10 @@ namespace LoLMapGeoConverter {
         public float[] transformationMatrix;
 
 
+        public int unknownByte1;
+        public int unknownByte2;
+
+
         public MapGeoObjectBlock() {
 
         }

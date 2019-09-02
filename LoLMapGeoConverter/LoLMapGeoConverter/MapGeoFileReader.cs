@@ -308,14 +308,21 @@ namespace LoLMapGeoConverter {
 
 
                 int unknownByte1 = mapgeoFile.ReadByte();  // no idea
+                if(unknownByte1 != 0x1f && unknownByte1 != 0x1c && unknownByte1 != 0x1e) {
+                    Console.WriteLine("unrecognized unknownByte1:  " + unknownByte1.ToString("X2"));
+                    Program.Pause();
+                }
+                objectBlock.unknownByte1 = unknownByte1;
+
 
                 if(version == 7) {
                     int unknownByte2 = mapgeoFile.ReadByte();  // again, no idea
 
-                    if(unknownByte1 != 0x1f && unknownByte2 != 0xff) {
-                        Console.WriteLine("non-0x1fff unknown bytes:  " + unknownByte1.ToString("X2") + " " + unknownByte2.ToString("X2"));
+                    if(unknownByte2 != 0xff) {
+                        Console.WriteLine("non-0xff unknownByte2:  " + unknownByte2.ToString("X2"));
                         Program.Pause();
                     }
+                    objectBlock.unknownByte2 = unknownByte2;
                 }
 
 
@@ -680,6 +687,10 @@ namespace LoLMapGeoConverter {
 
                 MapGeoObjectBlock objectBlock = objectBlocks[i];
                 bool hasLightmap = (objectBlock.lightmapTextureName.Length > 0);
+
+                /*if(objectBlock.unknownByte1 != 0x1e) {
+                    continue;
+                }*/
 
 
                 MapGeoVertexBlock vertexBlock = null;
