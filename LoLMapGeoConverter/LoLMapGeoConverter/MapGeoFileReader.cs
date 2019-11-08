@@ -200,7 +200,7 @@ namespace LoLMapGeoConverter {
                 //            they can have separate positions without having separate UV coords, which makes the transformation matrix down below redundant)
                 if(type1 == 0x01 && (type2 == 0x02 || type2 == 0x00 || type2 == 0x05 || type2 == 0x04 || type2 == 0x03)) {
                     objectBlock.uvBlockIndex = objectBlock.vertexBlockIndex;
-                } else if(type1 == 0x02 && (type2 == 0x00 || type2 == 0x01 || type2 == 0x02)) {
+                } else if(type1 == 0x02 && (type2 == 0x00 || type2 == 0x01 || type2 == 0x02 || type2 == 0x03)) {
                     objectBlock.uvBlockIndex = mapgeoFile.ReadInt();
                 } else {
                     Console.WriteLine("\nunrecognized object type combination " + type1 + "/" + type2 + ", current offset " + mapgeoFile.GetFilePosition());

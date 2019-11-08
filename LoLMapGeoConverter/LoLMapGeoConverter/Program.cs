@@ -23,7 +23,7 @@ namespace LoLMapGeoConverter {
             string binFilePath = "";
 
             for(int i = 0; i < args.Length; i++) {
-                if(args[i].EndsWith(".mapgeo") == true) {
+                if(args[i].ToLower().EndsWith(".mapgeo") == true) {
                     if(mapgeoFilePath == "") {
                         mapgeoFilePath = args[i];
                     } else {
@@ -31,7 +31,7 @@ namespace LoLMapGeoConverter {
                     }
                 }
 
-                if(args[i].EndsWith(".bin") == true) {
+                if(args[i].ToLower().EndsWith(".bin") == true) {
                     if(binFilePath == "") {
                         binFilePath = args[i];
                     } else {
