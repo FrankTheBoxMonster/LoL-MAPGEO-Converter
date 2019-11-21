@@ -27,7 +27,7 @@ namespace LoLMapGeoConverter {
 
 
         public int unknownByte1;
-        public int unknownByte2;
+        public int layerBitmask;
 
 
         public MapGeoObjectBlock() {

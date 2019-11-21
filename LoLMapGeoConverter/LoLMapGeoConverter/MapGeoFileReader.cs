@@ -36,6 +36,12 @@ namespace LoLMapGeoConverter {
         private MapGeoObjectBlock[] objectBlocks;
         private Dictionary<string, MapGeoMaterial> materialTextureMap = new Dictionary<string, MapGeoMaterial>();  // <material name, material>
 
+        private Dictionary<int, int> layerBitmaskObjectCounts = new Dictionary<int, int>();  // <layer bitmask value, frequency>
+        private int foundLayersBitmask = 0;  // stores how many distinct layers have been encountered (objects with non-0xff layer bitmasks get OR'd into here)
+
+        private const int maxLayerCount = 8;
+        private const int globalLayerBitmaskValue = 0xff;
+
 
 
         public MapGeoFileReader(FileWrapper mapgeoFile, int version, FileWrapper binFile) {
@@ -307,7 +313,11 @@ namespace LoLMapGeoConverter {
                 }
 
 
-                int unknownByte1 = mapgeoFile.ReadByte();  // no idea
+                // not sure what this is exactly, some sort of object flag?
+                // 
+                // objects with similar transparency effects tend to have the same value here, see the Project map for a good example
+
+                int unknownByte1 = mapgeoFile.ReadByte();
                 if(unknownByte1 != 0x1f && unknownByte1 != 0x1c && unknownByte1 != 0x1e) {
                     Console.WriteLine("unrecognized unknownByte1:  " + unknownByte1.ToString("X2"));
                     Program.Pause();
@@ -316,13 +326,18 @@ namespace LoLMapGeoConverter {
 
 
                 if(version == 7) {
-                    int unknownByte2 = mapgeoFile.ReadByte();  // again, no idea
+                    int layerBitmask = mapgeoFile.ReadByte();
+                    objectBlock.layerBitmask = layerBitmask;
 
-                    if(unknownByte2 != 0xff) {
-                        Console.WriteLine("non-0xff unknownByte2:  " + unknownByte2.ToString("X2"));
-                        Program.Pause();
+                    if(layerBitmaskObjectCounts.ContainsKey(layerBitmask) == false) {
+                        layerBitmaskObjectCounts[layerBitmask] = 1;
+                    } else {
+                        layerBitmaskObjectCounts[layerBitmask]++;
                     }
-                    objectBlock.unknownByte2 = unknownByte2;
+
+                    if(layerBitmask != globalLayerBitmaskValue) {
+                        foundLayersBitmask |= layerBitmask;
+                    }
                 }
 
 
@@ -357,6 +372,14 @@ namespace LoLMapGeoConverter {
                     mapgeoFile.ReadByte();
                 }
             }
+
+
+            Console.WriteLine("\n\nlayer bitmask object counts:");
+            foreach(KeyValuePair<int, int> pair in layerBitmaskObjectCounts) {
+                Console.WriteLine("  0x" + pair.Key.ToString("X2") + ":  " + pair.Value);
+            }
+            Console.WriteLine();
+            Program.Pause();
         }
 
         #endregion
@@ -644,15 +667,62 @@ namespace LoLMapGeoConverter {
         #region ConvertFiles()
 
         public void ConvertFiles() {
+            Console.WriteLine("\n\nwriting .obj file(s)");
+
+            string baseFileName = this.mapgeoFile.GetName();
+
+            if(foundLayersBitmask == 0) {
+                // a layer bitmask of 0xff means that object is present on every layer
+                // 
+                // we don't keep track of 0xff layer objects because of this fact, so
+                // if we have a global bitmask of 0 then we have only found 0xff objects
+                // 
+                // this means that we don't really have to do anything with layers because
+                // there really aren't any (technically a layer that always has everything is
+                // still a layer, but there aren't multiple *distinct* layers, so we don't have to
+                // make any distinguishments between the layers for our output files)
+
+                ConvertFilesForLayer(-1, baseFileName);
+
+                Console.WriteLine("\n\nmapgeo did not contain multiple layers");
+            } else {
+                for(int i = 0; i < maxLayerCount; i++) {
+                    int layerBitmask = (1 << i);
+
+                    //if((foundLayersBitmask | layerBitmask) == foundLayersBitmask) {
+                        string layerFileName = baseFileName + ".Layer" + i;
+                        ConvertFilesForLayer(i, layerFileName);
+                    //} else {
+                        // layer was not found in the file, so we don't need to write a file for it
+                    //}
+
+                    // going to just allow for empty files to be written for empty layers so that we can verify that we didn't lose anything somehow
+                }
+
+
+                // going to check and report for layers that *appear* to be unused (see ConvertFilesForLayer() on why we can't just write empty files for
+                // seemingly-unused layers)
+                Console.WriteLine("\n\nunused layer warnings:\n");
+                for(int i = 0; i < maxLayerCount; i++) {
+                    int layerBitmask = (1 << i);
+
+                    if((foundLayersBitmask | layerBitmask) != foundLayersBitmask) {
+                        Console.WriteLine("layer " + i + " appears to be unused");
+                    }
+                }
+            }
+        }
+
+        private void ConvertFilesForLayer(int layerIndex, string baseFileName) {
             Console.WriteLine("\n\nwriting .obj file");
 
             string folderPath = this.mapgeoFile.GetFolderPath();
 
-            string baseFileName = this.mapgeoFile.GetName();
+            string objFileName = baseFileName + ".obj";
             string mtlFileName = baseFileName + ".mtl";  // storing this for later to use in the .obj file
 
 
-            FileWrapper objFileWrapper = new FileWrapper(folderPath + baseFileName + ".obj");
+            FileWrapper objFileWrapper = new FileWrapper(folderPath + objFileName);
             objFileWrapper.Clear();  // clearing any pre-existing file
 
             TextFileWriter objFile = new TextFileWriter(objFileWrapper);
@@ -675,6 +745,30 @@ namespace LoLMapGeoConverter {
             }
 
 
+            int layerBitmaskFlag = (1 << maxLayerCount) - 1;
+            if(layerIndex != -1) {
+                layerBitmaskFlag = (1 << layerIndex);
+
+                if((foundLayersBitmask & layerBitmaskFlag) != layerBitmaskFlag) {
+                    // this layer was never encountered outside of a 0xff value
+                    // 
+                    // original idea was to just write empty files for unused layers, however there was concern that
+                    // there could be a single base layer that had zero delta objects of its own and would actually just
+                    // represent the absence of all delta objects, which would mean that all of this layer's objects would
+                    // show up flagged as 0xff, which would result in us assuming that this layer is actually unused since
+                    // it never listed any objects of its own
+                    // 
+                    // we would end up having to depend on Riot never doing this and always having at least a single delta
+                    // object for each layer, which simply doesn't seem like a very safe expectation at all, so we'll just
+                    // deal with duplicate output files and try to write every single layer available until a more explicit
+                    // solution can be found (materials.bin file does not appear to be very helpful, overall seems like Riot
+                    // just allows all 8 layers to be fully defined at all times)
+
+                    //layerBitmaskFlag = 0;  // would result in an empty file
+                }
+            }
+
+
             Dictionary<int, MapGeoVertexBlock> vertexBlocks = new Dictionary<int, MapGeoVertexBlock>();
             Dictionary<int, MapGeoUVBlock> uvBlocks = new Dictionary<int, MapGeoUVBlock>();
 
@@ -683,7 +777,12 @@ namespace LoLMapGeoConverter {
             int currentVertexTotal = 1;
 
             for(int i = 0; i < objectBlocks.Length; i++) {
-                Console.WriteLine("writing .obj file entry " + (i + 1) + "/" + objectBlocks.Length + ", " + ((i + 1f) / objectBlocks.Length * 100) + "% complete");
+                string progressString = "";
+                if(layerIndex != -1) {
+                    progressString += "layer " + (layerIndex + 1) + "/" + maxLayerCount + ":  ";
+                }
+                progressString += "writing .obj file entry " + (i + 1) + "/" + objectBlocks.Length + ", " + ((i + 1f) / objectBlocks.Length * 100) + "% complete";
+                Console.WriteLine(progressString);
 
                 MapGeoObjectBlock objectBlock = objectBlocks[i];
                 bool hasLightmap = (objectBlock.lightmapTextureName.Length > 0);
@@ -691,6 +790,10 @@ namespace LoLMapGeoConverter {
                 /*if(objectBlock.unknownByte1 != 0x1e) {
                     continue;
                 }*/
+
+                if((objectBlock.layerBitmask & layerBitmaskFlag) != layerBitmaskFlag) {
+                    continue;
+                }
 
 
                 MapGeoVertexBlock vertexBlock = null;
