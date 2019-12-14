@@ -7,8 +7,10 @@ using System.Threading.Tasks;
 namespace LoLMapGeoConverter {
     public class MapGeoVertex {
 
-        public float[] position;
-        public float[] normalDirection;
+        public float[] position = null;
+        public float[] normalDirection = null;
+        public float[] colorUV = null;
+        public float[] lightmapUV = null;
 
 
         public MapGeoVertex() {

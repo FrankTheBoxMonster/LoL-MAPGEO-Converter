@@ -8,8 +8,8 @@ namespace LoLMapGeoConverter {
     public class MapGeoObjectBlock {
 
         public string objectName;
-        public int vertexBlockIndex;
-        public int uvBlockIndex;
+        public int[] floatDataBlockIndices;
+        public int vertexFormatBlockIndex;
         public int triBlockIndex;
         public MapGeoSubmesh[] submeshes;
         public string lightmapTextureName;
@@ -28,6 +28,9 @@ namespace LoLMapGeoConverter {
 
         public int unknownByte1;
         public int layerBitmask;
+
+
+        public MapGeoVertexBlock vertexBlock;
 
 
         public MapGeoObjectBlock() {

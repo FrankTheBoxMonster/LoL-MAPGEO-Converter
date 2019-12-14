@@ -7,6 +7,8 @@ using System.Threading.Tasks;
 namespace LoLMapGeoConverter {
     public class MapGeoFileReader {
 
+        private const bool createMergedLayerFile = false;
+
         private static readonly string[] knownSamplerNames = { "DiffuseTexture",
                                                                "Diffuse_Texture",
                                                                "Bottom_Texture",
@@ -30,6 +32,7 @@ namespace LoLMapGeoConverter {
 
         private int version;
 
+        private MapGeoVertexFormatBlock[] vertexFormatBlocks;
         private MapGeoFloatDataBlock[] floatDataBlocks;
         private MapGeoTriBlock[] triBlocks;
         private List<string> materialNames = new List<string>();
@@ -62,18 +65,8 @@ namespace LoLMapGeoConverter {
             }
 
 
-
-            int unknownBlockCount = mapgeoFile.ReadInt();
-
-            for(int i = 0; i < unknownBlockCount; i++) {
-                // values appear ot be mostly either 0x00, 0x02, or 0x03, but there's also some 0x01, 0x04, 0x07, 0x0e (unknown significance)
-                // 
-                // apparently this is called `VertexElemGroup` by Riot according to moon, still don't know what it's used for though
-                for(int j = 0; j < 128; j++) {
-                    mapgeoFile.ReadByte();  // these appear to be 32 ints but we'll just read 128 bytes for now
-                }
-            }
-
+            Console.WriteLine("\nreading vertex format blocks:  " + mapgeoFile.GetFilePosition());
+            this.ReadVertexFormatBlocks();
 
 
             Console.WriteLine("\nreading float data blocks:  " + mapgeoFile.GetFilePosition());
@@ -109,6 +102,70 @@ namespace LoLMapGeoConverter {
             }
         }
 
+
+        #region ReadVertexFormatBlocks()
+
+        private void ReadVertexFormatBlocks() {
+            // each object block is given what's pretty much a start index into this list, and then moves through it sequentially based on
+            // the number of float data blocks that the object block uses
+            // 
+            // format blocks contain a list of vertex properties, defined as Pair<property name, byte format>, which appear in the format block
+            // in the order that they are defined individually for each vertex in the float data blocks that use this format block
+            // 
+            // most of the time, a file will have a single format block with position/normal/UV data, as well as a pair of format blocks that
+            // instead split up the data into position/normal in one block and UV data in the other (rarely, position is alone, and instead
+            // you get normal/UV put in the second)
+            // 
+            // some maps also use lightmap data, which often means that they end up with sets of format blocks that have color + lightmap UVs and
+            // other sets that have just color UVs with no lightmap data
+            // 
+            // these format blocks have room for up to 15 properties, and always contain exactly that many in the file, with the unused values simply
+            // being filled in by default values that go completely ignored
+
+            int vertexFormatBlockCount = mapgeoFile.ReadInt();
+            vertexFormatBlocks = new MapGeoVertexFormatBlock[vertexFormatBlockCount];
+
+            for(int i = 0; i < vertexFormatBlockCount; i++) {
+                MapGeoVertexFormatBlock formatBlock = new MapGeoVertexFormatBlock();
+                vertexFormatBlocks[i] = formatBlock;
+
+                int unknown = mapgeoFile.ReadInt();  // this is apparently a type value for the format block itself, "dynamic", "static", or "streamed"
+                if(unknown != 0) {
+                    Console.WriteLine("\nvertex format block " + i + " had non-zero unknown byte:  " + unknown);
+                    Program.Pause();
+                }
+
+                int definedPropertyCount = mapgeoFile.ReadInt();
+                int placeholderPropertyCount = 15 - definedPropertyCount;
+
+                formatBlock.properties = new MapGeoVertexProperty[definedPropertyCount];
+                for(int j = 0; j < definedPropertyCount; j++) {
+                    MapGeoVertexProperty property = new MapGeoVertexProperty();
+                    formatBlock.properties[j] = property;
+
+                    property.name = (MapGeoVertexPropertyName) mapgeoFile.ReadInt();
+                    property.format = (MapGeoVertexPropertyFormat) mapgeoFile.ReadInt();
+
+
+                    if(System.Enum.IsDefined(typeof(MapGeoVertexPropertyName), property.name) == false) {
+                        Console.WriteLine("\nvertex format block " + i + " property " + j + " had unknown property name:  " + property.name);
+                        Program.Pause();
+                    }
+
+                    if(System.Enum.IsDefined(typeof(MapGeoVertexPropertyFormat), property.format) == false) {
+                        Console.WriteLine("\nvertex format block " + i + " property " + j + " had unknown property format:  " + property.format);
+                        Program.Pause();
+                    }
+                }
+
+                for(int j = 0; j < placeholderPropertyCount; j++) {
+                    mapgeoFile.ReadInt();  // defaults to 0x00 (property name "position")
+                    mapgeoFile.ReadInt();  // defaults to 0x03 (property format "float4"?)
+                }
+            }
+        }
+
+        #endregion
 
         #region ReadFloatDataBlocks()
 
@@ -180,7 +237,6 @@ namespace LoLMapGeoConverter {
             for(int i = 0; i < objectBlockCount; i++) {
                 Console.WriteLine("reading object block " + (i + 1) + "/" + objectBlockCount + ", " + ((i + 1f) / objectBlockCount * 100) + "% complete, offset " + mapgeoFile.GetFilePosition());
 
-
                 MapGeoObjectBlock objectBlock = new MapGeoObjectBlock();
                 objectBlocks[i] = objectBlock;
 
@@ -189,33 +245,18 @@ namespace LoLMapGeoConverter {
                 objectBlock.objectName = mapgeoFile.ReadString(objectNameLength);
 
                 int vertexCount = mapgeoFile.ReadInt();  // not important since we write submeshes, not full objects
-                int type1 = mapgeoFile.ReadInt();
-                int type2 = mapgeoFile.ReadInt();
+                int floatDataBlockCount = mapgeoFile.ReadInt();
+                objectBlock.vertexFormatBlockIndex = mapgeoFile.ReadInt();
 
-                objectBlock.vertexBlockIndex = mapgeoFile.ReadInt();
-
-
-                objectBlock.uvBlockIndex = -1;
-
-                // these are likely useful in some other way, pretty sure we just added `type2` values as we found them without
-                // actually trying to correlate them to anything, since we never actually use `type2` for anything
-                // 
-                // `type1` values is how float data block formats are determined:
-                //   - 0x01:  block contains both vertex and UV data
-                //   - 0x02:  block contains only vertex data, with UV data coming from a separate block (this is used for duplicate mesh objects, so that
-                //            they can have separate positions without having separate UV coords, which makes the transformation matrix down below redundant)
-                if(type1 == 0x01 && (type2 == 0x02 || type2 == 0x00 || type2 == 0x05 || type2 == 0x04 || type2 == 0x03)) {
-                    objectBlock.uvBlockIndex = objectBlock.vertexBlockIndex;
-                } else if(type1 == 0x02 && (type2 == 0x00 || type2 == 0x01 || type2 == 0x02 || type2 == 0x03)) {
-                    objectBlock.uvBlockIndex = mapgeoFile.ReadInt();
-                } else {
-                    Console.WriteLine("\nunrecognized object type combination " + type1 + "/" + type2 + ", current offset " + mapgeoFile.GetFilePosition());
-                    Program.Pause();
+                objectBlock.floatDataBlockIndices = new int[floatDataBlockCount];
+                for(int j = 0; j < floatDataBlockCount; j++) {
+                    objectBlock.floatDataBlockIndices[j] = mapgeoFile.ReadInt();
                 }
 
 
                 int totalTriIndexCount = mapgeoFile.ReadInt();  // total tri count = this value / 3 (again not really important since we only care about submeshes)
                 objectBlock.triBlockIndex = mapgeoFile.ReadInt();
+
 
                 int submeshCount = mapgeoFile.ReadInt();  // apparently this has a hard limit of 32 according to moon
 
@@ -248,6 +289,7 @@ namespace LoLMapGeoConverter {
                     int unknown1 = mapgeoFile.ReadInt();
                     int unknown2 = mapgeoFile.ReadInt();
                 }
+
 
 
                 // no idea what this section is, we just read it as bytes for now
@@ -664,6 +706,125 @@ namespace LoLMapGeoConverter {
         #endregion
 
 
+        #region BuildVertexBlock()
+
+        private MapGeoVertexBlock BuildVertexBlock(MapGeoObjectBlock objectBlock) {
+            if(objectBlock.vertexBlock != null) {
+                // multi-layer objects can save some time by reusing their block from last time
+                return objectBlock.vertexBlock;
+            }
+
+
+            MapGeoVertexBlock vertexBlock = new MapGeoVertexBlock();
+            objectBlock.vertexBlock = vertexBlock;  // save for next time, if any
+
+
+            List<MapGeoVertexPropertyName> allPropertyNames = new List<MapGeoVertexPropertyName>();
+            List<MapGeoVertexProperty[]> allVertexProperties = new List<MapGeoVertexProperty[]>();
+            List<int> vertexByteSizes = new List<int>();
+
+            for(int i = 0; i < objectBlock.floatDataBlockIndices.Length; i++) {
+                int formatBlockIndex = objectBlock.vertexFormatBlockIndex + i;
+                MapGeoVertexFormatBlock formatBlock = vertexFormatBlocks[formatBlockIndex];
+
+                allVertexProperties.Add(formatBlock.properties);
+                vertexByteSizes.Add(0);
+
+                for(int j = 0; j < formatBlock.properties.Length; j++) {
+                    MapGeoVertexProperty property = formatBlock.properties[j];
+
+                    if(allPropertyNames.Contains(property.name) == true) {
+                        Console.WriteLine("Warning:  multiple definition of vertex property " + property.name + " on object block \"" + objectBlock.objectName + "\"");
+                        Program.Pause();
+                    }
+
+                    allPropertyNames.Add(property.name);
+
+                    vertexByteSizes[i] += property.format.GetByteSize();
+                }
+            }
+
+
+            int vertexCount = -1;
+
+            for(int i = 0; i < objectBlock.floatDataBlockIndices.Length; i++) {
+                int dataBlockIndex = objectBlock.floatDataBlockIndices[i];
+                MapGeoFloatDataBlock dataBlock = floatDataBlocks[dataBlockIndex];
+
+                int dataBlockByteSize = dataBlock.data.Length * 4;
+
+                if((dataBlockByteSize % vertexByteSizes[i]) != 0) {
+                    Console.WriteLine("Error:  float data block " + dataBlockIndex + " of length " + dataBlockByteSize + " did not match predicted vertex byte size of " + vertexByteSizes[i]);
+                    Program.Pause();
+                }
+
+                int blockVertexCount = dataBlockByteSize / vertexByteSizes[i];
+                if(i == 0) {
+                    vertexCount = blockVertexCount;
+
+                    vertexBlock.vertices = new MapGeoVertex[vertexCount];
+                    for(int j = 0; j < vertexCount; j++) {
+                        MapGeoVertex vertex = new MapGeoVertex();
+                        vertexBlock.vertices[j] = vertex;
+                    }
+                } else {
+                    if(blockVertexCount != vertexCount) {
+                        Console.WriteLine("Error:  float data block for object \"" + objectBlock.objectName + "\" did not match the predicted vertex byte size of the previous blocks (local index " + i + ", global index " + dataBlockIndex + ")");
+                        Program.Pause();
+                    }
+                }
+
+
+                MapGeoVertexProperty[] blockVertexProperties = allVertexProperties[i];
+
+                //int offset = 0;
+                for(int j = 0; j < vertexCount; j++) {
+                    MapGeoVertex vertex = vertexBlock.vertices[j];
+                    int offset = vertexByteSizes[i] * j / 4;
+
+                    for(int k = 0; k < blockVertexProperties.Length; k++) {
+                        MapGeoVertexProperty property = blockVertexProperties[k];
+
+                        int propertyByteSize = property.format.GetByteSize();
+                        int floatCount = propertyByteSize / 4;
+
+                        float[] floatValues = new float[floatCount];
+                        for(int m = 0; m < floatCount; m++) {
+                            floatValues[m] = dataBlock.data[offset + m];
+                        }
+
+                        offset += floatCount;
+
+
+                        switch(property.name) {
+                            default:
+                                throw new System.Exception("unrecognized MapGeoVertexPropertyName " + property.name);
+                                break;
+
+                            case MapGeoVertexPropertyName.Position:
+                                vertex.position = floatValues;
+                                break;
+                            case MapGeoVertexPropertyName.NormalDirection:
+                                vertex.normalDirection = floatValues;
+                                break;
+                            case MapGeoVertexPropertyName.ColorUV:
+                                vertex.colorUV = floatValues;
+                                break;
+                            case MapGeoVertexPropertyName.LightmapUV:
+                                vertex.lightmapUV = floatValues;
+                                break;
+                        }
+                    }
+                }
+            }
+
+
+            return vertexBlock;
+        }
+
+        #endregion
+
+
         #region ConvertFiles()
 
         public void ConvertFiles() {
@@ -671,7 +832,36 @@ namespace LoLMapGeoConverter {
 
             string baseFileName = this.mapgeoFile.GetName();
 
-            if(foundLayersBitmask == 0) {
+            if(createMergedLayerFile == true) {
+                // create a single file of all layers combined, but also output a data file to allow for custom processing of layer data
+
+                FileWrapper layerDataFileWrapper = new FileWrapper(this.mapgeoFile.GetFolderPath() + baseFileName + ".mapgeolayer");
+                layerDataFileWrapper.Clear();
+
+                string magic = "";
+                layerDataFileWrapper.WriteChars(magic.ToCharArray());
+
+                int version = 1;
+                layerDataFileWrapper.WriteInt(version);
+
+                int objectCount = objectBlocks.Length;
+                layerDataFileWrapper.WriteInt(objectCount);
+
+                for(int i = 0; i < objectCount; i++) {
+                    MapGeoObjectBlock objectBlock = objectBlocks[i];
+
+                    int layerMask = objectBlock.layerBitmask;
+                    layerDataFileWrapper.WriteByte(layerMask);
+                }
+
+                layerDataFileWrapper.Close();
+
+
+
+                ConvertFilesForLayer(-1, baseFileName);
+
+                Console.WriteLine("\n\nwrote merged layer .obj file along with layer data file");
+            } else if(foundLayersBitmask == 0) {
                 // a layer bitmask of 0xff means that object is present on every layer
                 // 
                 // we don't keep track of 0xff layer objects because of this fact, so
@@ -687,6 +877,7 @@ namespace LoLMapGeoConverter {
                 Console.WriteLine("\n\nmapgeo did not contain multiple layers");
             } else {
                 for(int i = 0; i < maxLayerCount; i++) {
+                //for(int i = 1; i >= 0; i--) {
                     int layerBitmask = (1 << i);
 
                     //if((foundLayersBitmask | layerBitmask) == foundLayersBitmask) {
@@ -710,8 +901,21 @@ namespace LoLMapGeoConverter {
                         Console.WriteLine("layer " + i + " appears to be unused");
                     }
                 }
+
+
+                // note:  there *may* be a definitive layer listing inside of the map's data bin file (*not* materials.bin)
+                // 
+                // 738b7962c4e58140.bin / 3751997361 / 2201161822 / 2650904341 1484706743 / 1309176603
+                // 
+                // this seems like it may be listing different mapgeo layers, given how there's five of them and each has a "name" property
+                // 
+                // would need to see some other example of mapgeo layers in use in order to feel comfortable confirming this, however
             }
         }
+
+        #endregion
+
+        #region ConvertFilesForLayer()
 
         private void ConvertFilesForLayer(int layerIndex, string baseFileName) {
             Console.WriteLine("\n\nwriting .obj file");
@@ -745,7 +949,9 @@ namespace LoLMapGeoConverter {
             }
 
 
-            int layerBitmaskFlag = (1 << maxLayerCount) - 1;
+
+            //int layerBitmaskFlag = (1 << maxLayerCount) - 1;
+            int layerBitmaskFlag = 0;
             if(layerIndex != -1) {
                 layerBitmaskFlag = (1 << layerIndex);
 
@@ -769,9 +975,6 @@ namespace LoLMapGeoConverter {
             }
 
 
-            Dictionary<int, MapGeoVertexBlock> vertexBlocks = new Dictionary<int, MapGeoVertexBlock>();
-            Dictionary<int, MapGeoUVBlock> uvBlocks = new Dictionary<int, MapGeoUVBlock>();
-
             // .obj files are 1-indexed, but normal people use 0-indexed arrays, so this value is
             // initialized to `1` to counter this offset
             int currentVertexTotal = 1;
@@ -785,7 +988,7 @@ namespace LoLMapGeoConverter {
                 Console.WriteLine(progressString);
 
                 MapGeoObjectBlock objectBlock = objectBlocks[i];
-                bool hasLightmap = (objectBlock.lightmapTextureName.Length > 0);
+                //bool hasLightmap = (objectBlock.lightmapTextureName.Length > 0);
 
                 /*if(objectBlock.unknownByte1 != 0x1e) {
                     continue;
@@ -795,41 +998,12 @@ namespace LoLMapGeoConverter {
                     continue;
                 }
 
-
-                MapGeoVertexBlock vertexBlock = null;
-                MapGeoUVBlock uvBlock = null;
-
-                if(vertexBlocks.TryGetValue(objectBlock.vertexBlockIndex, out vertexBlock) == false) {
-                    MapGeoFloatDataBlock floatDataBlock = floatDataBlocks[objectBlock.vertexBlockIndex];
-
-                    if(objectBlock.vertexBlockIndex != objectBlock.uvBlockIndex) {
-                        vertexBlock = floatDataBlock.ToVertexOnlyBlock();
-
-                        vertexBlocks.Add(objectBlock.vertexBlockIndex, vertexBlock);
-
-                        // we'll get the UV block later
-                    } else {
-                        floatDataBlock.ToVertexAndUVBlock(out vertexBlock, out uvBlock, hasLightmap);
-
-                        vertexBlocks.Add(objectBlock.vertexBlockIndex, vertexBlock);
-                        uvBlocks.Add(objectBlock.vertexBlockIndex, uvBlock);
-                    }
-                }
+                /*if(i != 37) {
+                    continue;
+                }*/
 
 
-                if(uvBlock == null) {
-                    if(uvBlocks.TryGetValue(objectBlock.uvBlockIndex, out uvBlock) == false) {
-                        // already tried getting the UV block from above in "vertex + UV" format, so if we still
-                        // don't have a UV block then it must be a "UV only" format
-
-                        MapGeoFloatDataBlock floatDataBlock = floatDataBlocks[objectBlock.uvBlockIndex];
-
-                        uvBlock = floatDataBlock.ToUVOnlyBlock(hasLightmap);
-                        uvBlocks.Add(objectBlock.uvBlockIndex, uvBlock);
-                    }
-                }
-
-
+                MapGeoVertexBlock vertexBlock = BuildVertexBlock(objectBlock);
                 MapGeoTriBlock triBlock = triBlocks[objectBlock.triBlockIndex];
 
                 int totalVertexCount = vertexBlock.vertices.Length;
@@ -856,12 +1030,13 @@ namespace LoLMapGeoConverter {
 
 
                     for(int j = 0; j < totalVertexCount; j++) {
-                        MapGeoUV uv = uvBlock.uvs[j];
+                        MapGeoVertex vertex = vertexBlock.vertices[j];
 
                         // have to invert the V-coordinate due to how Riot handles their UV coordinates (flipped upside-down about the Y=0.5 axis)
-                        objFile.WriteLine("vt " + uv.colorUV[0] + " " + (1f - uv.colorUV[1]));
+                        objFile.WriteLine("vt " + vertex.colorUV[0] + " " + (1f - vertex.colorUV[1]));
 
                         // these are not interchangeable, you'll end up with bad textures if you swap the UV sets
+                        bool hasLightmap = (vertex.lightmapUV != null);
                         /*if(hasLightmap == false) {
                             objFile.WriteLine("vt " + uv.colorUV[0] + " " + (1f - uv.colorUV[1]));
                         } else {

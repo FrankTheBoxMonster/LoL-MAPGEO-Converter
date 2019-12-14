@@ -48,11 +48,11 @@
     <Compile Include="MapGeoMaterial.cs" />
     <Compile Include="MapGeoObjectBlock.cs" />
     <Compile Include="MapGeoSubmesh.cs" />
-    <Compile Include="MapGeoUV.cs" />
+    <Compile Include="MapGeoVertexProperty.cs" />
+    <Compile Include="MapGeoVertexFormatBlock.cs" />
     <Compile Include="MapGeoTri.cs" />
     <Compile Include="MapGeoVertex.cs" />
     <Compile Include="MapGeoTriBlock.cs" />
-    <Compile Include="MapGeoUVBlock.cs" />
     <Compile Include="MapGeoVertexBlock.cs" />
     <Compile Include="MapGeoFloatDataBlock.cs" />
     <Compile Include="Program.cs" />

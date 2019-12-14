@@ -5,12 +5,12 @@ using System.Text;
 using System.Threading.Tasks;
 
 namespace LoLMapGeoConverter {
-    public class MapGeoUVBlock {
+    public class MapGeoVertexFormatBlock {
 
-        public MapGeoUV[] uvs;
+        public MapGeoVertexProperty[] properties;
 
 
-        public MapGeoUVBlock() {
+        public MapGeoVertexFormatBlock() {
 
         }
     }
