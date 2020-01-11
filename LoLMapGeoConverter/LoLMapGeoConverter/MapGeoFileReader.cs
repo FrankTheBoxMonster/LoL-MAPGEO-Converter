@@ -383,7 +383,7 @@ namespace LoLMapGeoConverter {
                 }
 
 
-                // 27 floats, all really small values, first six appear to be UV range but the rest are really small
+                // 27 floats (might be 9x Vector3?), all really small values, first six appear to be UV range but the rest are really small
                 // 
                 // sets of threes also seem to have similar value ranges, however this is likely just coincidence
                 // 
@@ -838,7 +838,7 @@ namespace LoLMapGeoConverter {
                 FileWrapper layerDataFileWrapper = new FileWrapper(this.mapgeoFile.GetFolderPath() + baseFileName + ".mapgeolayer");
                 layerDataFileWrapper.Clear();
 
-                string magic = "";
+                string magic = "MGLAYERS";
                 layerDataFileWrapper.WriteChars(magic.ToCharArray());
 
                 int version = 1;

@@ -9,6 +9,10 @@ namespace LoLMapGeoConverter {
     public class Program {
 
         public static void Main(string[] args) {
+            System.Globalization.CultureInfo cultureInfo = System.Globalization.CultureInfo.CreateSpecificCulture("en-US");
+            System.Threading.Thread.CurrentThread.CurrentCulture = cultureInfo;
+            System.Threading.Thread.CurrentThread.CurrentUICulture = cultureInfo;
+
             Console.WriteLine("LoL MapGeo Converter by FrankTheBoxMonster");
 
             if(args.Length < 1) {
