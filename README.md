@@ -2,7 +2,7 @@
 
 This tool can convert Riot .MAPGEO files into .OBJ/.MTL files.
 
-[Download links](https://github.com/FrankTheBoxMonster/LoL-MAPGEO-Converter/releases/tag/v2.0)
+[Download links](https://github.com/FrankTheBoxMonster/LoL-MAPGEO-Converter/releases/tag/v2.1)
 
 
 ![](https://raw.githubusercontent.com/FrankTheBoxMonster/LoL-MAPGEO-Converter/master/screenshot2_maya_scene.PNG)
