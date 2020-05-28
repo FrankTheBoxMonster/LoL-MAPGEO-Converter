@@ -16,9 +16,16 @@ namespace LoLMapGeoConverter {
                                                                "GlowTexture",
                                                                "Glow_Texture",
                                                                "Mask_Textures",
-                                                               "Mask_Texture"  // "Diffuse_Texture" should come before this one
+                                                               "Mask_Texture",  // "Diffuse_Texture" should come before this one
+                                                               "Scrolling_Texture"  // used with "ScrollingColor" samplers and comes with a "Color" param
                                                              };
-        private static readonly string[] knownEmissiveColorNames = { "Emissive_Color", "Color_01" };
+        private static readonly string[] knownEmissiveColorNames = { "Emissive_Color",
+                                                                     "Color_01",
+                                                                     "Color",
+                                                                     "ColorTop",  // used for horizontal emissive gradients (giving this one priority over the bottom color because it's so far been top is brither and bottom is darker, so the top one looks better and less dreary)
+                                                                     "ColorBottom"  // used for horizontal emissive gradients (see above)
+                                                                   };
+        private static readonly string valueKeyHash = "\xca\xd3\x5e\x42";  // fnv1a32 hash of "value" --> 0x425ed3ca, string reads it backwards from what an int would read due to going one byte at a time rather than 4 bytes together as little endian
 
         private static readonly float[] identityMatrix = { 1, 0, 0, 0,
                                                            0, 1, 0, 0,
@@ -45,6 +52,13 @@ namespace LoLMapGeoConverter {
         private const int maxLayerCount = 8;
         private const int globalLayerBitmaskValue = 0xff;
 
+        private Dictionary<int, char[]> layerObjectChars = new Dictionary<int, char[]>();  // dict[layer index] = char array, so that we don't have to concatenate constantly
+        private Dictionary<int, string> layerObjectStrings = new Dictionary<int, string>();  // dict[layer index] = string of chars for whether the layer has the object at string[object index]
+        private Dictionary<int, int> layerDuplicateReferences = new Dictionary<int, int>();  // dict[layer index] = duplicate layer reference index, -1 if unique or first
+
+        private const char layerObjectStringCharPresent = '1';
+        private const char layerObjectStringCharAbsent = '0';
+
 
 
         public MapGeoFileReader(FileWrapper mapgeoFile, int version, FileWrapper binFile) {
@@ -53,7 +67,7 @@ namespace LoLMapGeoConverter {
             this.version = version;
 
 
-            if(version != 7) {
+            if(version < 7) {
                 int unknownHeaderBytes = mapgeoFile.ReadByte();  // moon said this was a bool that toggles on a global `SEPARATE_POINT_LIGHTS` property
 
                 if(unknownHeaderBytes != 0) {
@@ -62,6 +76,25 @@ namespace LoLMapGeoConverter {
                 }
             } else {
                 // version 7 removed this byte from the header
+            }
+
+
+            if(version >= 9) {
+                int unknownHeaderFlags1 = mapgeoFile.ReadInt();  // added on version 9, significance unknown, so far only found a value of zero, possibly related to the object block data that was also added for this version
+
+                if(unknownHeaderFlags1 != 0) {
+                    Console.WriteLine("\nunknown v9 header flags 1 are non-zero:  " + unknownHeaderFlags1);
+                    Program.Pause();
+                }
+            }
+
+            if(version >= 10) {
+                int unknownHeaderFlags2 = mapgeoFile.ReadInt();  // added on version 10, significance unknown, so far only found a value of zero, this is in addition to the similar contiguous value that was already added in version 9, unlike version 9 however this value is the only known change for version 10, although it's possible that it's related to the extra object block data added in version 11
+
+                if(unknownHeaderFlags2 != 0) {
+                    Console.WriteLine("\nunknown v10 header flags 2 are non-zero:  " + unknownHeaderFlags2);
+                    Program.Pause();
+                }
             }
 
 
@@ -233,6 +266,13 @@ namespace LoLMapGeoConverter {
             int objectBlockCount = mapgeoFile.ReadInt();
             Console.WriteLine("object block count:  " + objectBlockCount);
 
+
+            for(int i = 0; i < maxLayerCount; i++) {
+                layerObjectChars[i] = new char[objectBlockCount];  // so that we don't have to concatenate constantly
+                layerDuplicateReferences[i] = -1;
+            }
+
+
             objectBlocks = new MapGeoObjectBlock[objectBlockCount];
             for(int i = 0; i < objectBlockCount; i++) {
                 Console.WriteLine("reading object block " + (i + 1) + "/" + objectBlockCount + ", " + ((i + 1f) / objectBlockCount * 100) + "% complete, offset " + mapgeoFile.GetFilePosition());
@@ -306,7 +346,7 @@ namespace LoLMapGeoConverter {
                 // starting with the TFT maps, they started actually using this transformation matrix for a couple objects, so we actually
                 // have to make sure to handle it properly now, but most still use an identity matrix, although this might change moving forward
 
-                if(version != 5) {
+                if(version >= 6) {
                     mapgeoFile.ReadByte();  // necessary to fix version 5/6 differences, signifcance unknown, only known difference between versions
                 }
 
@@ -358,16 +398,26 @@ namespace LoLMapGeoConverter {
                 // not sure what this is exactly, some sort of object flag?
                 // 
                 // objects with similar transparency effects tend to have the same value here, see the Project map for a good example
+                // 
+                // 0x1c - fuzzy circle lights, uses transparency, camera looks through these textures planes to project the light onto objects behind
+                //      - also used for window lights on buildings
+                // 0x1e - also transparency, but seems to also be connected to animated/scrolling textures?
 
                 int unknownByte1 = mapgeoFile.ReadByte();
                 if(unknownByte1 != 0x1f && unknownByte1 != 0x1c && unknownByte1 != 0x1e) {
-                    Console.WriteLine("unrecognized unknownByte1:  " + unknownByte1.ToString("X2"));
+                    Console.WriteLine("unrecognized unknownByte1:  0x" + unknownByte1.ToString("X2"));
                     Program.Pause();
                 }
+
+                /*if(unknownByte1 != 0x1f) {
+                    Console.WriteLine("  non-0x1f unknownByte1:  0x" + unknownByte1.ToString("X2"));
+                    Program.Pause();
+                }*/
+
                 objectBlock.unknownByte1 = unknownByte1;
 
 
-                if(version == 7) {
+                if(version >= 7) {
                     int layerBitmask = mapgeoFile.ReadByte();
                     objectBlock.layerBitmask = layerBitmask;
 
@@ -380,26 +430,52 @@ namespace LoLMapGeoConverter {
                     if(layerBitmask != globalLayerBitmaskValue) {
                         foundLayersBitmask |= layerBitmask;
                     }
+
+
+                    for(int j = 0; j < maxLayerCount; j++) {
+                        int layerBitmaskFlag = (1 << j);
+
+                        if((layerBitmask & layerBitmaskFlag) != layerBitmaskFlag) {
+                            layerObjectChars[j][i] = layerObjectStringCharAbsent;
+                        } else {
+                            layerObjectChars[j][i] = layerObjectStringCharPresent;
+                        }
+                    }
                 }
 
 
-                // 27 floats (might be 9x Vector3?), all really small values, first six appear to be UV range but the rest are really small
-                // 
-                // sets of threes also seem to have similar value ranges, however this is likely just coincidence
-                // 
-                // sample taken from the Project map's 0th object:
-                //   0.4532 0.5010 0.6329
-                //   0.3848 0.4264 0.5898
-                //   0.009715 0.01165 0.01663
-                //   -0.004104 -0.004169 -0.004142
-                //   -0.005723 -0.005705 -0.005619
-                //   0.1282 0.01433 0.02365
-                //   -0.1397 -0.1536 -0.2135
-                //   -0.0001638 -0.0003975 -0.0002642
-                //   -0.2823 -0.3129 -0.4322
+                
+                if(version < 8) {
+                    // 27 floats (might be 9x Vector3?), all really small values, first six appear to be UV range but the rest are really small
+                    // 
+                    // sets of threes also seem to have similar value ranges, however this is likely just coincidence
+                    // 
+                    // sample taken from the Project map's 0th object:
+                    //   0.4532 0.5010 0.6329
+                    //   0.3848 0.4264 0.5898
+                    //   0.009715 0.01165 0.01663
+                    //   -0.004104 -0.004169 -0.004142
+                    //   -0.005723 -0.005705 -0.005619
+                    //   0.1282 0.01433 0.02365
+                    //   -0.1397 -0.1536 -0.2135
+                    //   -0.0001638 -0.0003975 -0.0002642
+                    //   -0.2823 -0.3129 -0.4322
 
-                for(int j = 0; j < 27; j++) {
-                    mapgeoFile.ReadFloat();
+                    for(int j = 0; j < 27; j++) {
+                        mapgeoFile.ReadFloat();
+                    }
+                } else {
+                    // version 8 removed this part
+                }
+
+
+                if(version >= 11) {
+                    int unknownByte = mapgeoFile.ReadByte();  // version 11 added this, significance unknown, so far only found zeros, based on proximity to the layer bitmask, it could be related to that somehow?  but if it was just a simple extension from 8 layers to 16 layers then it shouldn't it have been assigned 0xff?  maybe not if they were not going to update every previous map to use the new layers...  might also be related to the extra header data that was added in version 10?
+
+                    if(unknownByte != 0) {
+                        Console.WriteLine("\nunknown v11 object block data is non-zero:  0x" + unknownByte.ToString("X2"));
+                        Program.Pause();
+                    }
                 }
 
 
@@ -412,6 +488,34 @@ namespace LoLMapGeoConverter {
 
                 for(int j = 0; j < 16; j++) {  // 4 floats, possibly something with lightmap data
                     mapgeoFile.ReadByte();
+                }
+
+
+
+                if(version >= 9) {
+                    for(int j = 0; j < 20; j++) {  // added in version 9, significance unknown, so far only found values of all zero, possibly related to the header flag value that was also added for this version
+                        int value = mapgeoFile.ReadByte();
+
+                        if(value != 0) {
+                            Console.WriteLine("\nunknown v9 object block data is non-zero:  0x" + value.ToString("X2"));
+                            Program.Pause();
+                        }
+                    }
+                }
+            }
+
+
+            for(int i = 0; i < maxLayerCount; i++) {
+                string thisLayerString = new string(layerObjectChars[i]);  // so that we can just use string equality to compare the entire thing
+                layerObjectStrings[i] = thisLayerString;
+
+                for(int j = 0; j < i; j++) {
+                    string otherLayerString = layerObjectStrings[j];
+
+                    if(thisLayerString == otherLayerString) {
+                        layerDuplicateReferences[i] = j;
+                        break;
+                    }
                 }
             }
 
@@ -627,7 +731,11 @@ namespace LoLMapGeoConverter {
 
                         //emissiveColorStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownEmissiveColorNames[i]);
                         //emissiveColorStartIndex = stringSplit.IndexOf(searchString);
-                        emissiveColorStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownEmissiveColorNames[i]);
+
+                        // need to make sure we find the actual sampler param key followed by its value key hash and not
+                        // just another random string that happens to contain "Color", since then we might try to read
+                        // the rest of that other string as bad data
+                        emissiveColorStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownEmissiveColorNames[i] + MapGeoFileReader.valueKeyHash);
 
 
                         if(emissiveColorStartIndex >= 0) {
@@ -641,7 +749,7 @@ namespace LoLMapGeoConverter {
 
                     if(emissiveColorStartIndex < 0) {
                         if(samplerNameStartIndex < 0) {
-                            Console.WriteLine("\n\n  still couldn't find emissive color keys for material \"" + material.materialName + "\" (will replace the material with a bright pink color)");
+                            Console.WriteLine("\n  still couldn't find emissive color keys for material \"" + material.materialName + "\" (will replace the material with a bright pink color)\n");
                             Program.Pause();
 
                             material.ambientColor[0] = 1.0f;
@@ -657,10 +765,15 @@ namespace LoLMapGeoConverter {
                         int nameEndIndex = emissiveColorStartIndex + emissiveColorName.Length;
                         int valueTypeIndex = nameEndIndex + 4;  // have to skip over the hash for "value"
 
-                        if(stringSplit[valueTypeIndex] != 0x0d) {
-                            Console.WriteLine("\n\n  emissive color has unrecognized value type for material \"" + material.materialName + "\":  " + ((int) stringSplit[valueTypeIndex]).ToString("X2"));
+                        if(stringSplit[valueTypeIndex] != 0x0d) {  // corresponds to a value type of "vector4" (RGBA float color)
+                            Console.WriteLine("\n\n  emissive color has unrecognized value type for material \"" + material.materialName + "\":  0x" + ((int) stringSplit[valueTypeIndex]).ToString("X2"));
                             Program.Pause();
                         } else {
+                            if(samplerNameStartIndex < 0) {  // only need to report this if we gave a warning for it earlier
+                                Console.WriteLine("\n  found emissive color for missing sampler material \"" + material.materialName + "\" (material might only be just a color with no texture, but should still check to make sure we aren't missing a new sampler key)\n");
+                                Program.Pause();
+                            }
+
                             // four floats, rgba
                             int colorOffset = valueTypeIndex + 1;  // type is one byte
                             for(int i = 0; i < 4; i++) {
@@ -807,6 +920,9 @@ namespace LoLMapGeoConverter {
                             case MapGeoVertexPropertyName.NormalDirection:
                                 vertex.normalDirection = floatValues;
                                 break;
+                            case MapGeoVertexPropertyName.SecondaryColor:
+                                // don't feel like handling this at the moment
+                                break;
                             case MapGeoVertexPropertyName.ColorUV:
                                 vertex.colorUV = floatValues;
                                 break;
@@ -876,8 +992,19 @@ namespace LoLMapGeoConverter {
 
                 Console.WriteLine("\n\nmapgeo did not contain multiple layers");
             } else {
+
+
                 for(int i = 0; i < maxLayerCount; i++) {
                 //for(int i = 1; i >= 0; i--) {
+                    
+                    if(layerDuplicateReferences[i] != -1) {
+                        // duplicate of another layer, so skip it
+                        continue;
+                    } else {
+                        // unique layer, so allow us to write it
+                    }
+
+
                     int layerBitmask = (1 << i);
 
                     //if((foundLayersBitmask | layerBitmask) == foundLayersBitmask) {
@@ -893,14 +1020,41 @@ namespace LoLMapGeoConverter {
 
                 // going to check and report for layers that *appear* to be unused (see ConvertFilesForLayer() on why we can't just write empty files for
                 // seemingly-unused layers)
-                Console.WriteLine("\n\nunused layer warnings:\n");
+                Console.WriteLine("\n\nunused layer warnings (these layers contain no unique objects and may be unused):\n");
                 for(int i = 0; i < maxLayerCount; i++) {
+                    if(layerDuplicateReferences[i] != -1) {
+                        // these layers will get reported as duplicates anyways, no need to report them twice since them being duplicates of something unused inherently implies that they are also unused
+                        continue;
+                    }
+
+
                     int layerBitmask = (1 << i);
 
                     if((foundLayersBitmask | layerBitmask) != foundLayersBitmask) {
-                        Console.WriteLine("layer " + i + " appears to be unused");
+                        Console.WriteLine("layer " + i + " might be unused");
                     }
                 }
+
+
+                Console.WriteLine("\n\nduplicate layer warnings (these layers contain the exact same objects as a previous layer with no changes):\n");
+                
+                for(int i = 0; i < maxLayerCount; i++) {
+                    int duplicateLayerReferenceIndex = layerDuplicateReferences[i];
+
+                    if(duplicateLayerReferenceIndex != -1) {
+                        Console.WriteLine("layer " + i + " was a duplicate of layer " + duplicateLayerReferenceIndex + " and was not converted");
+                    }
+                }
+
+
+                // also note that we did end up running into an issue with "unused" layers where the only difference between a used or unused layer was a single added object
+                // 
+                // may need to add extra checks to always consider Layer 0 as being used, that combined with the duplicate checks should be good enough to tell what is used or not
+                // 
+                // duplicate layers could even be skipped for writing entirely, which would be nice when dealing with some maps with only a couple layers and then
+                // having to keep deleting the other unused layers each execution in order to save space (both harddrive space and clutter of visual space in the file explorer)
+                //Console.WriteLine("\n\nreminder:  change this to check for *duplicate* layers rather than just trying to guess unused ones (e.g. \"Layer 6 is a duplicate of Layer 5, Layer 7 is a duplicate of Layer 5, Layer 5 appears to be unused\"");
+
 
 
                 // note:  there *may* be a definitive layer listing inside of the map's data bin file (*not* materials.bin)
@@ -1166,6 +1320,26 @@ namespace LoLMapGeoConverter {
 
                                 mtlFile.WriteLine("map_Kd textures/" + material.textureName);
                             }
+
+
+                            // missing:  some materials want what *should* be a map_Ka texture (defined under a "mask" material param)
+                            // 
+                            // problem with this however is that Maya does not seem to allow importing such a material, and will create something untextured instead
+                            // 
+                            // keeping the color in without a mask texture however is completely fine
+                            // 
+                            // we will just output the material without the mask texture but with the Ka value, so that there is at least data present for
+                            // this color, and if someone needs to apply a mask to it then they can do that on their own
+                            // 
+                            // 
+                            // what seems to work:
+                            //  - Maya imports the Ka value onto the "Ambient Color" shader property
+                            //  - remember this ambient color value
+                            //  - override the shader property to take a file, and give it the mask texture listed in the materials.bin (note that some ambient color materials do not have mask texture, so Maya's default import is actually correct)
+                            //  - under the "Color Balance" section, set "Color Gain" to the original ambient color value,
+                            //  - set "Color Offset" to 128 gray
+                            //  - leave all other settings as they are
+                            //  - the result should be a decent enough approximation for what the live game intends
 
                             mtlFile.WriteLine("Ni 1.00");
                         }
