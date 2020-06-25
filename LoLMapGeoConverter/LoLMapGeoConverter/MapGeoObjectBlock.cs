@@ -13,6 +13,12 @@ namespace LoLMapGeoConverter {
         public int triBlockIndex;
         public MapGeoSubmesh[] submeshes;
         public string lightmapTextureName;
+        
+        public string bakedPaintTextureName;
+        public float bakedPaintTextureScaleU;
+        public float bakedPaintTextureScaleV;
+        public float bakedPaintTextureOffsetU;
+        public float bakedPaintTextureOffsetV;
 
 
         // in order of bytes read, the matrix looks like this:

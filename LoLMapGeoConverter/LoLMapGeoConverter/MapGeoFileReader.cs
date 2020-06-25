@@ -17,7 +17,8 @@ namespace LoLMapGeoConverter {
                                                                "Glow_Texture",
                                                                "Mask_Textures",
                                                                "Mask_Texture",  // "Diffuse_Texture" should come before this one
-                                                               "Scrolling_Texture"  // used with "ScrollingColor" samplers and comes with a "Color" param
+                                                               "Scrolling_Texture",  // used with "ScrollingColor" samplers and comes with a "Color" param
+                                                               "BAKED_DIFFUSE_TEXTURE",
                                                              };
         private static readonly string[] knownEmissiveColorNames = { "Emissive_Color",
                                                                      "Color_01",
@@ -59,6 +60,9 @@ namespace LoLMapGeoConverter {
         private const char layerObjectStringCharPresent = '1';
         private const char layerObjectStringCharAbsent = '0';
 
+        private HashSet<string> bakedPaintTextureNames = new HashSet<string>();
+        private List<string> sortedBakedPaintTextureNames = new List<string>();
+
 
 
         public MapGeoFileReader(FileWrapper mapgeoFile, int version, FileWrapper binFile) {
@@ -80,19 +84,35 @@ namespace LoLMapGeoConverter {
 
 
             if(version >= 9) {
-                int unknownHeaderFlags1 = mapgeoFile.ReadInt();  // added on version 9, significance unknown, so far only found a value of zero, possibly related to the object block data that was also added for this version
+                // added on version 9, significance unknown, possibly related to the object block data that was also added for this version
+                // 
+                // known values:
+                //  - "" (empty zero-length string)
+                //  - "BAKED_DIFFUSE_TEXTURE"
+                
+                int unknownHeaderStringLength1 = mapgeoFile.ReadInt();
+                string unknownHeaderString1 = mapgeoFile.ReadString(unknownHeaderStringLength1);
 
-                if(unknownHeaderFlags1 != 0) {
-                    Console.WriteLine("\nunknown v9 header flags 1 are non-zero:  " + unknownHeaderFlags1);
+                if(unknownHeaderStringLength1 != 0) {
+                    Console.WriteLine("\nunknown v9 header string 1 length is non-zero:  \"" + unknownHeaderString1 + "\"");
                     Program.Pause();
                 }
             }
 
             if(version >= 10) {
-                int unknownHeaderFlags2 = mapgeoFile.ReadInt();  // added on version 10, significance unknown, so far only found a value of zero, this is in addition to the similar contiguous value that was already added in version 9, unlike version 9 however this value is the only known change for version 10, although it's possible that it's related to the extra object block data added in version 11
+                // added on version 10, significance unknown, this is in addition to the similar contiguous value that was already
+                // added in version 9, unlike version 9 however this value is the only known change for version 10, although
+                // it's possible that it's related to the extra object block data added in version 11
+                // 
+                // known values:
+                //  - "" (empty zero-length string)
+                //  - "BAKED_DIFFUSE_TEXTURE_ALPHA"
 
-                if(unknownHeaderFlags2 != 0) {
-                    Console.WriteLine("\nunknown v10 header flags 2 are non-zero:  " + unknownHeaderFlags2);
+                int unknownHeaderStringLength2 = mapgeoFile.ReadInt();
+                string unknownHeaderString2 = mapgeoFile.ReadString(unknownHeaderStringLength2);
+
+                if(unknownHeaderStringLength2 != 0) {
+                    Console.WriteLine("\nunknown v10 header string 2 length is non-zero:  \"" + unknownHeaderString2 + "\"");
                     Program.Pause();
                 }
             }
@@ -189,13 +209,20 @@ namespace LoLMapGeoConverter {
                         Console.WriteLine("\nvertex format block " + i + " property " + j + " had unknown property format:  " + property.format);
                         Program.Pause();
                     }
+
+                    Console.WriteLine("block " + i + "/" + vertexFormatBlockCount + " property " + j + "/" + definedPropertyCount + " " + property.format + " " + property.name);
                 }
 
                 for(int j = 0; j < placeholderPropertyCount; j++) {
                     mapgeoFile.ReadInt();  // defaults to 0x00 (property name "position")
                     mapgeoFile.ReadInt();  // defaults to 0x03 (property format "float4"?)
                 }
+
+                Console.WriteLine();
             }
+
+            Console.WriteLine();
+            Program.Pause();
         }
 
         #endregion
@@ -470,7 +497,16 @@ namespace LoLMapGeoConverter {
 
 
                 if(version >= 11) {
-                    int unknownByte = mapgeoFile.ReadByte();  // version 11 added this, significance unknown, so far only found zeros, based on proximity to the layer bitmask, it could be related to that somehow?  but if it was just a simple extension from 8 layers to 16 layers then it shouldn't it have been assigned 0xff?  maybe not if they were not going to update every previous map to use the new layers...  might also be related to the extra header data that was added in version 10?
+                    // version 11 added this, significance unknown, so far only found zeros, based on proximity to the layer bitmask, it could be
+                    // related to that somehow?  but if it was just a simple extension from 8 layers to 16 layers then it shouldn't it have been
+                    // assigned 0xff?  maybe not if they were not going to update every previous map to use the new layers...  might also be
+                    // related to the extra header data that was added in version 10?
+                    // 
+                    // known values:
+                    //  - 0x00
+                    //  - 0x03
+
+                    int unknownByte = mapgeoFile.ReadByte();
 
                     if(unknownByte != 0) {
                         Console.WriteLine("\nunknown v11 object block data is non-zero:  0x" + unknownByte.ToString("X2"));
@@ -493,14 +529,23 @@ namespace LoLMapGeoConverter {
 
 
                 if(version >= 9) {
-                    for(int j = 0; j < 20; j++) {  // added in version 9, significance unknown, so far only found values of all zero, possibly related to the header flag value that was also added for this version
-                        int value = mapgeoFile.ReadByte();
+                    // added in version 9, significance unknown, possibly related to the header flag value that was also added for this version
 
-                        if(value != 0) {
-                            Console.WriteLine("\nunknown v9 object block data is non-zero:  0x" + value.ToString("X2"));
-                            Program.Pause();
-                        }
+                    int bakedPaintTextureNameLength = mapgeoFile.ReadInt();
+                    string bakedPaintTextureName = mapgeoFile.ReadString(bakedPaintTextureNameLength);
+                    objectBlock.bakedPaintTextureName = bakedPaintTextureName;
+
+                    // 4 floats, likely same idea as the ones in lightmap but for this new baked paint texture instead
+                    objectBlock.bakedPaintTextureScaleU = mapgeoFile.ReadFloat();
+                    objectBlock.bakedPaintTextureScaleV = mapgeoFile.ReadFloat();
+                    objectBlock.bakedPaintTextureOffsetU = mapgeoFile.ReadFloat();
+                    objectBlock.bakedPaintTextureOffsetV = mapgeoFile.ReadFloat();
+
+                    if(bakedPaintTextureName != "" && bakedPaintTextureNames.Contains(bakedPaintTextureName) == false) {
+                        bakedPaintTextureNames.Add(bakedPaintTextureName);
                     }
+                } else {
+                    objectBlock.bakedPaintTextureName = "";
                 }
             }
 
@@ -523,6 +568,16 @@ namespace LoLMapGeoConverter {
             Console.WriteLine("\n\nlayer bitmask object counts:");
             foreach(KeyValuePair<int, int> pair in layerBitmaskObjectCounts) {
                 Console.WriteLine("  0x" + pair.Key.ToString("X2") + ":  " + pair.Value);
+            }
+            Console.WriteLine();
+            Program.Pause();
+
+
+            Console.WriteLine("\n\nfound " + bakedPaintTextureNames.Count + " baked paint texture names:");
+            sortedBakedPaintTextureNames.AddRange(bakedPaintTextureNames);
+            sortedBakedPaintTextureNames.Sort();
+            foreach(string textureName in sortedBakedPaintTextureNames) {
+                Console.WriteLine(" - \"" + textureName + "\"");
             }
             Console.WriteLine();
             Program.Pause();
@@ -735,12 +790,13 @@ namespace LoLMapGeoConverter {
                         // need to make sure we find the actual sampler param key followed by its value key hash and not
                         // just another random string that happens to contain "Color", since then we might try to read
                         // the rest of that other string as bad data
-                        emissiveColorStartIndex = stringSplit.IndexOf(MapGeoFileReader.knownEmissiveColorNames[i] + MapGeoFileReader.valueKeyHash);
+                        string searchString = "\x10" + (char) (colorName.Length % 256) + (char) (colorName.Length / 256) + colorName + MapGeoFileReader.valueKeyHash;
+                        emissiveColorStartIndex = stringSplit.IndexOf(searchString);
 
 
                         if(emissiveColorStartIndex >= 0) {
                             // found an emissive color, so use this
-                            emissiveColorName = MapGeoFileReader.knownEmissiveColorNames[i];
+                            emissiveColorName = colorName;
                             break;
                         } else {
                             // try another option
@@ -762,7 +818,7 @@ namespace LoLMapGeoConverter {
                     } else {
                         // diffuse textures can have emissive colors too
 
-                        int nameEndIndex = emissiveColorStartIndex + emissiveColorName.Length;
+                        int nameEndIndex = emissiveColorStartIndex + emissiveColorName.Length + 3;  // +1 byte for string type, +2 bytes for string length
                         int valueTypeIndex = nameEndIndex + 4;  // have to skip over the hash for "value"
 
                         if(stringSplit[valueTypeIndex] != 0x0d) {  // corresponds to a value type of "vector4" (RGBA float color)
@@ -1185,9 +1241,18 @@ namespace LoLMapGeoConverter {
 
                     for(int j = 0; j < totalVertexCount; j++) {
                         MapGeoVertex vertex = vertexBlock.vertices[j];
+                        float[] uv = vertex.colorUV;
+
+                        if(objectBlock.bakedPaintTextureName != "" && vertex.lightmapUV != null) {
+                            uv = vertex.lightmapUV;
+                            uv[0] *= objectBlock.bakedPaintTextureScaleU;
+                            uv[1] *= objectBlock.bakedPaintTextureScaleV;
+                            uv[0] += objectBlock.bakedPaintTextureOffsetU;
+                            uv[1] += objectBlock.bakedPaintTextureOffsetV;
+                        }
 
                         // have to invert the V-coordinate due to how Riot handles their UV coordinates (flipped upside-down about the Y=0.5 axis)
-                        objFile.WriteLine("vt " + vertex.colorUV[0] + " " + (1f - vertex.colorUV[1]));
+                        objFile.WriteLine("vt " + uv[0] + " " + (1f - uv[1]));
 
                         // these are not interchangeable, you'll end up with bad textures if you swap the UV sets
                         bool hasLightmap = (vertex.lightmapUV != null);
@@ -1312,13 +1377,18 @@ namespace LoLMapGeoConverter {
                             mtlFile.WriteLine("Tf 1.00 1.00 1.00");
 
 
-                            if(material.textureName != "") {
+                            string textureName = material.textureName;
+                            if(objectBlock.bakedPaintTextureName != "") {
+                                textureName = objectBlock.bakedPaintTextureName;
+                            }
+                            
+                            if(textureName != "") {
                                 // fix for .tga files, carried over from .NVR, likely pointless in practice
-                                if(material.textureName.ToLower().Contains(".dds") == false) {
-                                    material.textureName = material.textureName.Substring(0, material.textureName.LastIndexOf('.')) + ".dds";
+                                if(textureName.ToLower().Contains(".dds") == false) {
+                                    textureName = textureName.Substring(0, textureName.LastIndexOf('.')) + ".dds";
                                 }
 
-                                mtlFile.WriteLine("map_Kd textures/" + material.textureName);
+                                mtlFile.WriteLine("map_Kd textures/" + textureName);
                             }
 
 
