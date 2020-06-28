@@ -426,9 +426,12 @@ namespace LoLMapGeoConverter {
                 // 
                 // objects with similar transparency effects tend to have the same value here, see the Project map for a good example
                 // 
+                // 0x1f - almost everything
                 // 0x1c - fuzzy circle lights, uses transparency, camera looks through these textures planes to project the light onto objects behind
                 //      - also used for window lights on buildings
                 // 0x1e - also transparency, but seems to also be connected to animated/scrolling textures?
+                // 
+                // note:  these don't seem to be required in order to get similar effects (e.g. animated textures don't need a non-0x1f value here)
 
                 int unknownByte1 = mapgeoFile.ReadByte();
                 if(unknownByte1 != 0x1f && unknownByte1 != 0x1c && unknownByte1 != 0x1e) {
@@ -503,8 +506,8 @@ namespace LoLMapGeoConverter {
                     // related to the extra header data that was added in version 10?
                     // 
                     // known values:
-                    //  - 0x00
-                    //  - 0x03
+                    //  - 0x00:  almost everything
+                    //  - 0x03:  so far only ever seen on the Ionia Nexus Blitz's river water meshes (which use some sort of translucency effect)
 
                     int unknownByte = mapgeoFile.ReadByte();
 
@@ -512,6 +515,8 @@ namespace LoLMapGeoConverter {
                         Console.WriteLine("\nunknown v11 object block data is non-zero:  0x" + unknownByte.ToString("X2"));
                         Program.Pause();
                     }
+
+                    objectBlock.v11UnknownByte = unknownByte;
                 }
 
 
@@ -1204,6 +1209,10 @@ namespace LoLMapGeoConverter {
                     continue;
                 }*/
 
+                /*if(objectBlock.v11UnknownByte != 0x03) {
+                    continue;
+                }*/
+
                 if((objectBlock.layerBitmask & layerBitmaskFlag) != layerBitmaskFlag) {
                     continue;
                 }
@@ -1230,7 +1239,7 @@ namespace LoLMapGeoConverter {
                         // we don't really have any other option in the .obj format
 
                         MapGeoVertex vertex = vertexBlock.vertices[j];
-                        float[] transformedVertex = objectBlock.ApplyTransformationMatrix(vertex.position, false);
+                        float[] transformedVertex = Vector3.ApplyTransformationMatrix(vertex.position, objectBlock.transformationMatrix, false);
 
                         // have to negate X-coordinates due to how Maya's coordinate axes work
                         objFile.WriteLine("v " + (-1 * transformedVertex[0]) + " " + transformedVertex[1] + " " + transformedVertex[2]);
@@ -1243,6 +1252,7 @@ namespace LoLMapGeoConverter {
                         MapGeoVertex vertex = vertexBlock.vertices[j];
                         float[] uv = vertex.colorUV;
 
+                        // baked paint textures use the lightmap UV coords instead of the color UV coords
                         if(objectBlock.bakedPaintTextureName != "" && vertex.lightmapUV != null) {
                             uv = vertex.lightmapUV;
                             uv[0] *= objectBlock.bakedPaintTextureScaleU;
@@ -1270,7 +1280,7 @@ namespace LoLMapGeoConverter {
                         // also going to apply the transformation matrix to the vertex normal directions
 
                         MapGeoVertex vertex = vertexBlock.vertices[j];
-                        float[] transformedNormal = objectBlock.ApplyTransformationMatrix(vertex.normalDirection, true);
+                        float[] transformedNormal = Vector3.ApplyTransformationMatrix(vertex.normalDirection, objectBlock.transformationMatrix, true);
 
 
                         // have to negate X-coordinates due to how Maya's coordinate axes work
@@ -1314,16 +1324,185 @@ namespace LoLMapGeoConverter {
                             int baseIndex = triIndex * 3;
                             for(int m = 0; m < triIndices.Length; m++) {  // skipping from 'k' over 'L' and straight to 'm' because 'L' looks like a '1'
                                 int currentIndex = triBlock.tris[triIndex].vertexIndices[m];
-                                int offsetIndex = currentIndex + currentVertexTotal;  // remember that the 1-index offset is already accounted for here
+                                int offsetIndex = currentIndex /*+ currentVertexTotal*/;  // remember that the 1-index offset is already accounted for here
 
                                 triIndices[m] = offsetIndex;
                             }
 
 
                             // swap any two for the Maya normals fix
-                            int temp = triIndices[0];
+                            /*int temp = triIndices[0];
                             triIndices[0] = triIndices[1];
-                            triIndices[1] = temp;
+                            triIndices[1] = temp;*/
+
+
+                            //  - calculate the face normal from the vertex normals
+                            //  - calculate the face center from the vertex positions
+                            //  - calculate the vertex rotations relative to the face's plane
+                            //  - order the vertices to be in counter-clockwise order (rotation angles only increases, can get angle using atan2())
+                            //  - note that rotation order can ignore 360-degree wraparound since order doesn't matter, we can just always start on the highest angle
+
+
+                            // need to prepare the vertices first
+                            Vector3[] vertexPositions = new Vector3[3];
+                            Vector3[] vertexNormals = new Vector3[3];
+                            for(int m = 0; m < 3; m++) {
+                                int vertexIndex = triIndices[m];
+                                MapGeoVertex rawVertex = vertexBlock.vertices[vertexIndex];
+                                float[] transformedPosition = Vector3.ApplyTransformationMatrix(rawVertex.position, objectBlock.transformationMatrix, false);
+                                float[] transformedNormal = Vector3.ApplyTransformationMatrix(rawVertex.normalDirection, objectBlock.transformationMatrix, true);
+                                transformedPosition[0] *= -1;
+                                transformedNormal[0] *= -1;
+                                vertexPositions[m] = new Vector3(transformedPosition);
+                                vertexNormals[m] = new Vector3(transformedNormal);
+                            }
+
+
+                            if(vertexPositions[0] == vertexPositions[1] || vertexPositions[0] == vertexPositions[2] || vertexPositions[1] == vertexPositions[2]) {  // this happens for collapsed faces 
+                                continue;  // we don't have any obligation to write every single face, so we can just skip it (no need to keep count of .obj faces written)
+                            }
+
+                            // face normal = cross product of the edges
+                            Vector3 edge1 = vertexPositions[1] - vertexPositions[0];
+                            Vector3 edge2 = vertexPositions[2] - vertexPositions[0];
+                            Vector3 faceNormal = Vector3.CrossProduct(edge1, edge2);
+
+                            if(faceNormal.Magnitude == 0) {  // another collapsed face case, but this time for when all three points are perfectly colinear
+                                continue;
+                            }
+                            faceNormal = faceNormal.Normalized;
+
+                            // need to use dot product to check which way to point
+                            Vector3 averageVertexNormalRaw = new Vector3();
+                            for(int m = 0; m < 3; m++) {
+                                averageVertexNormalRaw[m] = 0;
+
+                                for(int n = 0; n < 3; n++) {
+                                    averageVertexNormalRaw[m] += vertexNormals[n][m];
+                                }
+
+                                averageVertexNormalRaw[m] /= 3;
+                            }
+                            Vector3 averageVertexNormal = averageVertexNormalRaw.Normalized;
+
+                            // dot product of the average normal with the calculated face normal
+                            float dotProduct = Vector3.DotProduct(faceNormal, averageVertexNormal);
+
+                            if(dotProduct < 0) {
+                                faceNormal *= -1;
+                            }
+
+
+                            // face center = average of all vertex positions
+                            Vector3 faceCenter = new Vector3();
+                            for(int m = 0; m < 3; m++) {
+                                faceCenter[m] = 0;
+
+                                for(int n = 0; n < 3; n++) {
+                                    faceCenter[m] += vertexPositions[n][m];
+                                }
+
+                                faceCenter[m] /= 3;
+                            }
+
+
+                            if(i == 355 && j == 0 && k == 49) {
+                                int x = 0;
+                            }
+
+                            // need to calculate the face's transformation matrix
+                            Vector3 worldUpAxis = new Vector3(0, 1, 0);
+                            Vector3 faceXAxis = Vector3.CrossProduct(worldUpAxis, faceNormal);
+                            if(faceXAxis.Magnitude == 0) {  // only happens when something is either straight up or straight down
+                                faceXAxis.x = faceNormal.y;  // if we are straight up, then go straight right, else go straight left
+                            }
+                            faceXAxis = faceXAxis.Normalized;
+                            Vector3 faceYAxis = Vector3.CrossProduct(faceNormal, faceXAxis).Normalized;
+
+
+                            float[] faceWorldMatrix = new float[16];
+
+                            faceWorldMatrix[0] = faceXAxis.x;
+                            faceWorldMatrix[4] = faceYAxis.x;
+                            faceWorldMatrix[8] = faceNormal.x;
+
+                            faceWorldMatrix[1] = faceXAxis.y;
+                            faceWorldMatrix[5] = faceYAxis.y;
+                            faceWorldMatrix[9] = faceNormal.y;
+
+                            faceWorldMatrix[2] = faceXAxis.z;
+                            faceWorldMatrix[6] = faceYAxis.z;
+                            faceWorldMatrix[10] = faceNormal.z;
+
+                            faceWorldMatrix[12] = faceCenter.x;
+                            faceWorldMatrix[13] = faceCenter.y;
+                            faceWorldMatrix[14] = faceCenter.z;
+
+                            faceWorldMatrix[3] = 0;
+                            faceWorldMatrix[7] = 0;
+                            faceWorldMatrix[11] = 0;
+                            faceWorldMatrix[15] = 1;
+
+
+                            // invert the world matrix to get a local matrix, then apply that to each vertex to get local positions
+                            float[] faceLocalMatrix = Vector3.InvertMatrix(faceWorldMatrix);
+
+                            Vector3[] localPositions = new Vector3[3];
+                            for(int m = 0; m < 3; m++) {
+                                localPositions[m] = Vector3.ApplyTransformationMatrix(vertexPositions[m], faceLocalMatrix, false);
+                            }
+
+
+                            // convert the local positions to be angle rotations around the center
+                            // 
+                            // note that since we used the face normal as the look direction, our positions will be using x and y coords, not x and z
+                            float[] vertexLocalAngles = new float[3];
+                            for(int m = 0; m < 3; m++) {
+                                vertexLocalAngles[m] = (float) Math.Atan2(localPositions[m].y, localPositions[m].x);
+
+                                if(float.IsNaN(vertexLocalAngles[m]) == true) {
+                                    Console.WriteLine("found NaN");
+                                    Program.Pause();
+                                }
+                            }
+
+                            // note that Atan2() returns in the range [-pi, pi] using the unit circle (x --> infinity = counter-clockwise)
+                            // 
+                            // this means that we need to order our vertices by *increasing* angle, since Maya wants them to move counter-clockwise
+
+                            //Console.WriteLine("pre sort:  obj " + i + " submesh " + j + " face " + k + " angles:  " + vertexLocalAngles[0] + " " + vertexLocalAngles[1] + " " + vertexLocalAngles[2] + " vertices:  " + triIndices[0] + " " + triIndices[1] + " " + triIndices[2]);
+
+                            for(int m = 0; m < 2; m++) {
+                                for(int n = 1; n < 3; n++) {
+                                    float lhsAngle = vertexLocalAngles[m];
+                                    float rhsAngle = vertexLocalAngles[n];
+
+                                    if(rhsAngle < lhsAngle) {  // we want rhs to be greater than lhs, so if it's actually less, then swap them
+                                        float tempAngle = vertexLocalAngles[m];
+                                        vertexLocalAngles[m] = vertexLocalAngles[n];
+                                        vertexLocalAngles[n] = tempAngle;
+
+                                        int tempTriIndex = triIndices[m];
+                                        triIndices[m] = triIndices[n];
+                                        triIndices[n] = tempTriIndex;
+                                    }
+                                }
+                            }
+
+                            //Console.WriteLine("post sort:  angles:  " + vertexLocalAngles[0] + " " + vertexLocalAngles[1] + " " + vertexLocalAngles[2] + " vertices:  " + triIndices[0] + " " + triIndices[1] + " " + triIndices[2]);
+
+                            if(vertexLocalAngles[0] <= vertexLocalAngles[1] && vertexLocalAngles[0] <= vertexLocalAngles[2] && vertexLocalAngles[1] <= vertexLocalAngles[2]) {
+                                //Console.WriteLine("sorting passed");
+                            } else {
+                                Console.WriteLine("sorting failed");
+                                Program.Pause();
+                            }
+
+
+                            for(int m = 0; m < 3; m++) {
+                                triIndices[m] += currentVertexTotal;
+                            }
+
 
 
                             string line = "f";
